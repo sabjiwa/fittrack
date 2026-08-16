@@ -39,18 +39,22 @@
     nav {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      padding: env(safe-area-inset-top, 0) 24px 0;
+      padding: calc(env(safe-area-inset-top, 0px) + 14px) 24px 0;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      height: calc(60px + env(safe-area-inset-top, 0px));
+      gap: 16px;
+      height: calc(60px + env(safe-area-inset-top, 0px) + 14px);
       position: sticky;
       top: 0;
       z-index: 100;
     }
-    .logo { font-size: 1.25rem; font-weight: 700; color: var(--accent); letter-spacing: -0.5px; }
-    .nav-tabs { display: flex; gap: 4px; }
+    .logo { font-size: 1.25rem; font-weight: 700; color: var(--accent); letter-spacing: -0.5px; flex-shrink: 0; }
+    .nav-tabs { display: flex; gap: 4px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+    .nav-tabs::-webkit-scrollbar { display: none; }
     .nav-tab {
+      white-space: nowrap;
+      flex-shrink: 0;
       background: none;
       border: none;
       color: var(--muted);
@@ -360,8 +364,9 @@
     #toast.show { transform: translateY(0); opacity: 1; }
 
     @media (max-width: 600px) {
-      nav { padding: 0 12px; }
+      nav { padding: calc(env(safe-area-inset-top, 0px) + 14px) 12px 0; gap: 10px; }
       .nav-tab { padding: 8px 10px; font-size: 0.8rem; }
+      .btn-label { display: none; }
       main { padding: 20px 12px; }
     }
   </style>
@@ -369,7 +374,7 @@
 <body>
 
 <nav>
-  <div class="logo">&#9889; FitTrack</div>
+  <div class="logo">FitTrack</div>
   <div class="nav-tabs">
     <button class="nav-tab active" onclick="showPage('dashboard')">Dashboard</button>
     <button class="nav-tab" onclick="showPage('log')">Log</button>
@@ -377,7 +382,7 @@
     <button class="nav-tab" onclick="showPage('progress')">Progress</button>
     <button class="nav-tab" onclick="showPage('body')">Body</button>
   </div>
-  <button class="btn btn-ghost btn-sm" onclick="openImportModal()" style="white-space:nowrap">&#8645; Import / Export</button>
+  <button class="btn btn-ghost btn-sm" onclick="openImportModal()" style="white-space:nowrap;flex-shrink:0">&#8645;<span class="btn-label"> Import / Export</span></button>
 </nav>
 
 <main>
