@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fittrack-v4';
+const CACHE_NAME = 'fittrack-v5';
 const APP_SHELL = [
   './index.html',
   './animals.js',
