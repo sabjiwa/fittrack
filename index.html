@@ -425,8 +425,66 @@
       main { padding: 20px 12px; }
     }
   </style>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
+    import {
+      getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+      createUserWithEmailAndPassword, signOut
+    } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
+    import {
+      getFirestore, doc, getDoc, setDoc, onSnapshot,
+      serverTimestamp, enableIndexedDbPersistence
+    } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBmpYTyz0qCkYY5OaMt6nYZkggtgHsderI",
+      authDomain: "fittrack-dee02.firebaseapp.com",
+      projectId: "fittrack-dee02",
+      storageBucket: "fittrack-dee02.firebasestorage.app",
+      messagingSenderId: "219640437803",
+      appId: "1:219640437803:web:14ae9ec0d950df7de75e6e",
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    enableIndexedDbPersistence(db).catch(() => {});
+
+    // The rest of the app is a plain (non-module) script, so expose what it
+    // needs on window rather than converting everything to modules — this
+    // app relies on inline onclick="..." handlers throughout, which only
+    // resolve against the global scope classic scripts get automatically.
+    window.fb = {
+      auth, db, doc, getDoc, setDoc, onSnapshot, serverTimestamp,
+      onAuthStateChanged, signInWithEmailAndPassword,
+      createUserWithEmailAndPassword, signOut,
+    };
+    window.dispatchEvent(new Event('fb-ready'));
+  </script>
 </head>
 <body>
+
+<!-- AUTH GATE -->
+<div class="modal-overlay open" id="auth-overlay" style="z-index:500">
+  <div class="modal" style="max-width:380px">
+    <h3>Sign in to FitTrack</h3>
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:16px">Your workouts sync across every device you sign into.</p>
+    <div class="form-group" style="margin-bottom:12px">
+      <label>Email</label>
+      <input type="email" id="auth-email" autocomplete="email" />
+    </div>
+    <div class="form-group" style="margin-bottom:12px">
+      <label>Password</label>
+      <input type="password" id="auth-password" autocomplete="current-password" />
+    </div>
+    <p id="auth-error" style="color:var(--accent2);font-size:0.8rem;display:none;margin-bottom:12px"></p>
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-ghost" style="flex:1" onclick="authSignUp()">Create Account</button>
+      <button class="btn btn-green" style="flex:1" onclick="authSignIn()">Sign In</button>
+    </div>
+  </div>
+</div>
 
 <nav>
   <div class="logo">FitTrack</div>
@@ -748,6 +806,17 @@
       </div>
     </div>
 
+    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0"/>
+
+    <!-- ACCOUNT -->
+    <div>
+      <p class="section-title" style="margin-bottom:8px">Account</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <span style="font-size:0.85rem;color:var(--muted)">Signed in as <strong id="account-email" style="color:var(--text)">—</strong></span>
+        <button class="btn btn-ghost btn-sm" onclick="signOutUser()">Sign Out</button>
+      </div>
+    </div>
+
     <div class="modal-footer" style="margin-top:20px">
       <button class="btn btn-ghost" onclick="closeImportModal()">Close</button>
     </div>
@@ -810,6 +879,184 @@ let workoutNotesMap = load('ft_workout_notes', {});
 // Current log state
 let currentExercises = [];
 let editingWorkoutId = null;
+
+// ============================================================
+// CLOUD SYNC (Firebase Auth + Firestore)
+// ============================================================
+let currentUser = null;
+let cloudUnsub = null;
+
+// Every mutation in the app calls this instead of hitting localStorage
+// directly, so local and cloud storage never drift apart.
+function persistAll() {
+  save('ft_workouts', workouts);
+  save('ft_metrics', metrics);
+  save('ft_custom_exercises', customExercises);
+  save('ft_goal', weeklyGoal);
+  save('ft_workout_notes', workoutNotesMap);
+
+  if (currentUser && window.fb) {
+    window.fb.setDoc(window.fb.doc(window.fb.db, 'users', currentUser.uid), {
+      workouts, metrics, customExercises, weeklyGoal,
+      workoutNotes: workoutNotesMap,
+      updatedAt: window.fb.serverTimestamp(),
+    }).catch(err => {
+      console.error('Cloud sync failed:', err);
+      toast('Saved locally, but cloud sync failed.');
+    });
+  }
+}
+
+function applyData(data) {
+  workouts = data.workouts || [];
+  metrics = data.metrics || [];
+  customExercises = data.customExercises || {};
+  weeklyGoal = data.weeklyGoal ?? 3;
+  workoutNotesMap = data.workoutNotes || {};
+  save('ft_workouts', workouts);
+  save('ft_metrics', metrics);
+  save('ft_custom_exercises', customExercises);
+  save('ft_goal', weeklyGoal);
+  save('ft_workout_notes', workoutNotesMap);
+}
+
+// Combines this device's local data with whatever's already in the cloud,
+// so signing into a second device never silently overwrites either side.
+function mergeData(cloud, local) {
+  const workoutsById = new Map();
+  (cloud.workouts || []).forEach(w => workoutsById.set(w.id, w));
+  (local.workouts || []).forEach(w => { if (!workoutsById.has(w.id)) workoutsById.set(w.id, w); });
+
+  const metricsByDate = new Map();
+  (cloud.metrics || []).forEach(m => metricsByDate.set(m.date, m));
+  (local.metrics || []).forEach(m => { if (!metricsByDate.has(m.date)) metricsByDate.set(m.date, m); });
+
+  return {
+    workouts: [...workoutsById.values()],
+    metrics: [...metricsByDate.values()].sort((a, b) => new Date(b.date) - new Date(a.date)),
+    customExercises: { ...local.customExercises, ...cloud.customExercises },
+    weeklyGoal: cloud.weeklyGoal ?? local.weeklyGoal,
+    workoutNotes: { ...local.workoutNotes, ...cloud.workoutNotes },
+  };
+}
+
+async function loadFromFirestoreWithMerge() {
+  const ref = window.fb.doc(window.fb.db, 'users', currentUser.uid);
+  const snap = await window.fb.getDoc(ref);
+
+  const local = {
+    workouts: load('ft_workouts', []),
+    metrics: load('ft_metrics', []),
+    customExercises: load('ft_custom_exercises', {}),
+    weeklyGoal: load('ft_goal', 3),
+    workoutNotes: load('ft_workout_notes', {}),
+  };
+
+  if (!snap.exists()) {
+    await window.fb.setDoc(ref, { ...local, updatedAt: window.fb.serverTimestamp() });
+    applyData(local);
+    return;
+  }
+
+  const merged = mergeData(snap.data(), local);
+  await window.fb.setDoc(ref, { ...merged, updatedAt: window.fb.serverTimestamp() });
+  applyData(merged);
+}
+
+function subscribeToCloud() {
+  if (cloudUnsub) cloudUnsub();
+  const ref = window.fb.doc(window.fb.db, 'users', currentUser.uid);
+  cloudUnsub = window.fb.onSnapshot(ref, (snap) => {
+    if (snap.metadata.hasPendingWrites) return; // this device's own write echoing back
+    if (!snap.exists()) return;
+    applyData(snap.data());
+    refreshCurrentPageIfSafe();
+  }, (err) => {
+    console.error('Cloud listener error:', err);
+    toast('Lost connection to cloud sync — check Firestore rules.');
+  });
+}
+
+// Re-renders whatever page is on screen when a change arrives from another
+// device — except the Log page, which may hold an in-progress, unsaved entry.
+function refreshCurrentPageIfSafe() {
+  const active = document.querySelector('.page.active');
+  const id = active ? active.id.replace('page-', '') : 'dashboard';
+  if (id === 'log') return;
+  if (id === 'dashboard') renderDashboard();
+  if (id === 'history') renderHistory();
+  if (id === 'progress') renderProgress();
+  if (id === 'body') renderMetrics();
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById('auth-error');
+  el.textContent = msg;
+  el.style.display = msg ? '' : 'none';
+}
+
+function friendlyAuthError(e) {
+  const code = e.code || '';
+  if (code.includes('wrong-password') || code.includes('invalid-credential')) return 'Incorrect email or password.';
+  if (code.includes('user-not-found')) return 'No account with that email — try Create Account.';
+  if (code.includes('email-already-in-use')) return 'That email already has an account — try Sign In.';
+  if (code.includes('weak-password')) return 'Password must be at least 6 characters.';
+  if (code.includes('invalid-email')) return 'That email address looks invalid.';
+  return 'Something went wrong. Please try again.';
+}
+
+async function authSignIn() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  if (!email || !password) { showAuthError('Enter your email and password.'); return; }
+  showAuthError('');
+  try {
+    await window.fb.signInWithEmailAndPassword(window.fb.auth, email, password);
+  } catch (e) {
+    showAuthError(friendlyAuthError(e));
+  }
+}
+
+async function authSignUp() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  if (!email || !password) { showAuthError('Enter your email and password.'); return; }
+  if (password.length < 6) { showAuthError('Password must be at least 6 characters.'); return; }
+  showAuthError('');
+  try {
+    await window.fb.createUserWithEmailAndPassword(window.fb.auth, email, password);
+  } catch (e) {
+    showAuthError(friendlyAuthError(e));
+  }
+}
+
+async function signOutUser() {
+  if (!confirm('Sign out of FitTrack?')) return;
+  await window.fb.signOut(window.fb.auth);
+}
+
+window.addEventListener('fb-ready', () => {
+  window.fb.onAuthStateChanged(window.fb.auth, async (user) => {
+    if (user) {
+      currentUser = user;
+      document.getElementById('auth-overlay').classList.remove('open');
+      const emailEl = document.getElementById('account-email');
+      if (emailEl) emailEl.textContent = user.email;
+      try {
+        await loadFromFirestoreWithMerge();
+        subscribeToCloud();
+      } catch (err) {
+        console.error('Cloud sync failed on sign-in:', err);
+        toast('Signed in, but cloud sync failed — check Firestore rules.');
+      }
+      refreshCurrentPageIfSafe();
+    } else {
+      currentUser = null;
+      if (cloudUnsub) { cloudUnsub(); cloudUnsub = null; }
+      document.getElementById('auth-overlay').classList.add('open');
+    }
+  });
+});
 
 // ============================================================
 // NAVIGATION
@@ -897,7 +1144,7 @@ function editGoal() {
 function closeGoalModal() { document.getElementById('goal-modal').classList.remove('open'); }
 function saveGoal() {
   weeklyGoal = Number(document.getElementById('goal-input').value) || 4;
-  save('ft_goal', weeklyGoal);
+  persistAll();
   closeGoalModal();
   renderDashboard();
   toast('Goal updated!');
@@ -1122,7 +1369,7 @@ function confirmExercise() {
   const isBuiltIn = Object.keys(EXERCISE_DB).some(k => k.toLowerCase() === name.toLowerCase());
   if (!isBuiltIn && (majorMuscle || minorMuscles.length > 0)) {
     customExercises[name] = { major: majorMuscle, minors: minorMuscles };
-    save('ft_custom_exercises', customExercises);
+    persistAll();
     // Add to datalist if not already there
     const datalist = document.getElementById('ex-suggestions');
     if (![...datalist.options].some(o => o.value.toLowerCase() === name.toLowerCase())) {
@@ -1258,7 +1505,6 @@ function saveWorkout() {
   if (workoutNotesKey) {
     if (workoutNotesText) workoutNotesMap[workoutNotesKey] = workoutNotesText;
     else delete workoutNotesMap[workoutNotesKey];
-    save('ft_workout_notes', workoutNotesMap);
   }
 
   if (editingWorkoutId !== null) {
@@ -1268,7 +1514,7 @@ function saveWorkout() {
       workouts[idx] = { ...workouts[idx], date, name, type, duration: Number(duration) || 0, notes, exercises: [...currentExercises] };
       updated = workouts[idx];
     }
-    save('ft_workouts', workouts);
+    persistAll();
     clearLog();
 
     const totalKg = updated ? computeWorkoutVolumeKg(updated) : 0;
@@ -1281,7 +1527,7 @@ function saveWorkout() {
   } else {
     const workout = { id: Date.now(), date, name, type, duration: Number(duration) || 0, notes, exercises: [...currentExercises] };
     workouts.push(workout);
-    save('ft_workouts', workouts);
+    persistAll();
     clearLog();
 
     const totalKg = computeWorkoutVolumeKg(workout);
@@ -1434,7 +1680,7 @@ function toggleHistory(header) {
 function deleteWorkout(id) {
   if (!confirm('Delete this workout?')) return;
   workouts = workouts.filter(w => w.id !== id);
-  save('ft_workouts', workouts);
+  persistAll();
   renderHistory();
   toast('Workout deleted.');
 }
@@ -1704,7 +1950,7 @@ function saveMetrics() {
   const idx = metrics.findIndex(m => m.date === date);
   if (idx >= 0) metrics[idx] = entry; else metrics.push(entry);
   metrics.sort((a,b) => new Date(b.date)-new Date(a.date));
-  save('ft_metrics', metrics);
+  persistAll();
   renderMetrics();
   toast('Metrics saved!');
 }
@@ -1736,7 +1982,7 @@ function renderMetrics() {
 
 function deleteMetric(date) {
   metrics = metrics.filter(m => m.date !== date);
-  save('ft_metrics', metrics);
+  persistAll();
   renderMetrics();
   toast('Entry deleted.');
 }
@@ -1937,7 +2183,7 @@ function confirmImport() {
     const dupe = workouts.find(x => x.date === w.date && x.name === w.name);
     if (!dupe) { workouts.push(w); added++; }
   });
-  save('ft_workouts', workouts);
+  persistAll();
   clearImportPreview();
   closeImportModal();
   toast(`Imported ${added} workout${added!==1?'s':''}!`);
@@ -2014,9 +2260,7 @@ function importJSON(input) {
         data.metrics.forEach(m => { if (!existingDates.has(m.date)) metrics.push(m); });
       }
       if (data.customExercises) Object.assign(customExercises, data.customExercises);
-      save('ft_workouts', workouts);
-      save('ft_metrics', metrics);
-      save('ft_custom_exercises', customExercises);
+      persistAll();
       closeImportModal();
       renderDashboard();
       toast('Backup imported!');
