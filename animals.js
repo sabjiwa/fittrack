@@ -7,7 +7,6 @@ const ANIMALS = [
   { name: "squirrel", plural: "squirrels", article: "A", weightKg: 0.45, wikiTitle: "Squirrel" },
   { name: "cat", plural: "cats", article: "A", weightKg: 4.5, wikiTitle: "Cat" },
   { name: "small dog", plural: "small dogs", article: "A", weightKg: 10, wikiTitle: "Beagle" },
-  { name: "human", plural: "humans", article: "A", weightKg: 54.4, wikiTitle: "Human" },
   { name: "wolf", plural: "wolves", article: "A", weightKg: 49, wikiTitle: "Wolf" },
   { name: "kangaroo", plural: "kangaroos", article: "A", weightKg: 55, wikiTitle: "Red kangaroo" },
   { name: "goat", plural: "goats", article: "A", weightKg: 66, wikiTitle: "Goat" },

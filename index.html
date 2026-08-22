@@ -135,6 +135,36 @@
       margin-bottom: 24px;
     }
     .form-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+
+    /* LAST TIME PANEL */
+    .last-time-panel {
+      background: var(--bg);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 20px;
+    }
+    .last-time-header {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    .last-time-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .last-time-row:last-child { border-bottom: none; }
+    .last-time-info { color: var(--muted); }
+    .last-time-info strong { color: var(--muted); font-weight: 600; }
+    .last-time-sets { display: block; font-size: 0.8rem; margin-top: 2px; }
+
     .form-group { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 140px; }
     label { font-size: 0.8rem; color: var(--muted); font-weight: 500; }
     input, select, textarea {
@@ -481,6 +511,15 @@
         </div>
       </div>
 
+      <div class="form-row" id="workout-notes-row" style="display:none">
+        <div class="form-group" style="flex:3">
+          <label id="workout-notes-label">Workout Notes</label>
+          <textarea id="log-workout-notes" rows="2" placeholder="e.g. Focus on form, use belt for heavy sets — carries over to every workout with this name"></textarea>
+        </div>
+      </div>
+
+      <div id="last-time-panel" class="last-time-panel" style="display:none"></div>
+
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <p class="section-title" style="margin:0">Exercises</p>
         <button class="btn btn-sm" onclick="openExerciseModal()">+ Add Exercise</button>
@@ -766,6 +805,7 @@ let workouts = load('ft_workouts', []);
 let metrics  = load('ft_metrics', []);
 let weeklyGoal = load('ft_goal', 3);
 let customExercises = load('ft_custom_exercises', {});
+let workoutNotesMap = load('ft_workout_notes', {});
 
 // Current log state
 let currentExercises = [];
@@ -869,6 +909,82 @@ function saveGoal() {
 function initLog() {
   const d = document.getElementById('log-date');
   if (!d.value) d.value = new Date().toISOString().slice(0,10);
+  renderWorkoutNotesField();
+  renderLastTimePanel();
+}
+
+// ============================================================
+// WORKOUT-NAME-KEYED HELPERS (recurring notes + "last time" reference)
+// ============================================================
+function normalizeWorkoutName(name) {
+  return (name || '').trim().toLowerCase();
+}
+
+function renderWorkoutNotesField() {
+  const key = normalizeWorkoutName(document.getElementById('log-name').value);
+  const row = document.getElementById('workout-notes-row');
+  const label = document.getElementById('workout-notes-label');
+  const field = document.getElementById('log-workout-notes');
+  if (!key) {
+    row.style.display = 'none';
+    field.value = '';
+    return;
+  }
+  const displayName = document.getElementById('log-name').value.trim();
+  label.textContent = `Notes for every "${displayName}" day`;
+  field.value = workoutNotesMap[key] || '';
+  row.style.display = '';
+}
+
+let lastTimeWorkout = null;
+function findLastWorkoutByName(name) {
+  const key = normalizeWorkoutName(name);
+  if (!key) return null;
+  const matches = workouts
+    .filter(w => normalizeWorkoutName(w.name) === key && w.id !== editingWorkoutId)
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+  return matches[0] || null;
+}
+
+function renderLastTimePanel() {
+  const name = document.getElementById('log-name').value;
+  const panel = document.getElementById('last-time-panel');
+  const last = findLastWorkoutByName(name);
+  lastTimeWorkout = last;
+
+  if (!last || !(last.exercises || []).length) {
+    panel.style.display = 'none';
+    panel.innerHTML = '';
+    return;
+  }
+
+  const dateStr = new Date(last.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  panel.style.display = '';
+  panel.innerHTML = `
+    <div class="last-time-header">Last "${last.name}" — ${dateStr}</div>
+    ${last.exercises.map((e, i) => `
+      <div class="last-time-row">
+        <div class="last-time-info">
+          <strong>${e.name}</strong>
+          <span class="last-time-sets">${(e.sets || []).map(s => `${s.reps}×${formatSetWeight(s.weight)}`).join(', ')}</span>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="addFromLastTime(${i})">+ Add</button>
+      </div>`).join('')}
+  `;
+}
+
+function addFromLastTime(i) {
+  if (!lastTimeWorkout) return;
+  const src = lastTimeWorkout.exercises[i];
+  currentExercises.push({
+    name: src.name,
+    majorMuscle: src.majorMuscle,
+    minorMuscles: [...(src.minorMuscles || [])],
+    sets: (src.sets || []).map(s => ({ ...s })),
+    notes: src.notes || '',
+  });
+  renderExerciseTable();
+  toast(`Added ${src.name} from last time`);
 }
 
 // ============================================================
@@ -1097,6 +1213,8 @@ function editWorkout(id) {
   document.getElementById('save-workout-btn').textContent = 'Update Workout';
   document.getElementById('log-cancel-edit').style.display = '';
   renderExerciseTable();
+  renderWorkoutNotesField();
+  renderLastTimePanel();
   showPage('log');
 }
 
@@ -1134,6 +1252,14 @@ function saveWorkout() {
   const notes = document.getElementById('log-notes').value.trim();
   if (!date) { alert('Select a date.'); return; }
   if (currentExercises.length === 0 && !duration) { alert('Add exercises or enter a duration.'); return; }
+
+  const workoutNotesKey = normalizeWorkoutName(name);
+  const workoutNotesText = document.getElementById('log-workout-notes').value.trim();
+  if (workoutNotesKey) {
+    if (workoutNotesText) workoutNotesMap[workoutNotesKey] = workoutNotesText;
+    else delete workoutNotesMap[workoutNotesKey];
+    save('ft_workout_notes', workoutNotesMap);
+  }
 
   if (editingWorkoutId !== null) {
     const idx = workouts.findIndex(w => w.id === editingWorkoutId);
@@ -1230,6 +1356,8 @@ function clearLog() {
   document.getElementById('save-workout-btn').textContent = 'Save Workout';
   document.getElementById('log-cancel-edit').style.display = 'none';
   renderExerciseTable();
+  renderWorkoutNotesField();
+  renderLastTimePanel();
 }
 
 // ============================================================
@@ -1938,6 +2066,12 @@ if ('serviceWorker' in navigator) {
 // Auto-fill muscles when exercise name changes
 document.getElementById('ex-name').addEventListener('input', autoFillMuscles);
 document.getElementById('ex-name').addEventListener('change', autoFillMuscles);
+
+// Show recurring workout notes + "last time" reference as the workout name is typed
+document.getElementById('log-name').addEventListener('input', () => {
+  renderWorkoutNotesField();
+  renderLastTimePanel();
+});
 
 // Close modals on overlay click
 document.getElementById('exercise-modal').addEventListener('click', function(e) {
