@@ -1632,6 +1632,17 @@ function computeWorkoutVolumeKg(workout) {
   return total;
 }
 
+function computeCardioTotals(workout) {
+  let totalKm = 0, totalSec = 0;
+  (workout.exercises || []).forEach(e => {
+    if (e.distance != null && e.durationSec != null) {
+      const km = kmFromDistance(e.distance, e.distanceUnit);
+      if (km) { totalKm += km; totalSec += e.durationSec; }
+    }
+  });
+  return { totalKm, totalSec };
+}
+
 // Sets always store weight in kg; display it in both units wherever it's shown
 function formatSetWeight(weightStr) {
   if (weightStr === '—' || weightStr === '' || weightStr == null) return '—';
@@ -1668,8 +1679,11 @@ function saveWorkout() {
     clearLog();
 
     const totalKg = updated ? computeWorkoutVolumeKg(updated) : 0;
+    const cardio = updated ? computeCardioTotals(updated) : { totalKm: 0, totalSec: 0 };
     if (totalKg > 0) {
       showAnimalReveal(totalKg, name, () => showPage('history'), 'Workout updated!');
+    } else if (cardio.totalKm > 0 && cardio.totalSec > 0) {
+      showSpeedReveal(cardio.totalKm, cardio.totalSec, name, () => showPage('history'), 'Workout updated!');
     } else {
       toast('Workout updated!');
       showPage('history');
@@ -1681,8 +1695,11 @@ function saveWorkout() {
     clearLog();
 
     const totalKg = computeWorkoutVolumeKg(workout);
+    const cardio = computeCardioTotals(workout);
     if (totalKg > 0) {
       showAnimalReveal(totalKg, name, () => showPage('dashboard'), 'Workout saved!');
+    } else if (cardio.totalKm > 0 && cardio.totalSec > 0) {
+      showSpeedReveal(cardio.totalKm, cardio.totalSec, name, () => showPage('dashboard'), 'Workout saved!');
     } else {
       toast('Workout saved!');
       showPage('dashboard');
@@ -1710,6 +1727,37 @@ async function showAnimalReveal(totalKg, title, onDone, toastMsg) {
 
   const animalWord = count === 1 ? animal.name : animal.plural;
   document.getElementById('reveal-headline').textContent = `Congratulations — you lifted ${count.toLocaleString()} ${animalWord}`;
+
+  const img = document.getElementById('reveal-animal-img');
+  img.classList.add('loading');
+  img.src = '';
+  img.alt = '';
+
+  revealOnDone = onDone;
+  revealToastMsg = toastMsg || 'Workout saved!';
+  document.getElementById('reveal-modal').classList.add('open');
+
+  const src = await fetchAnimalImage(animal.wikiTitle);
+  if (src) {
+    img.src = src;
+    img.alt = animal.name;
+  } else {
+    img.alt = `${animal.name} (image unavailable)`;
+  }
+  img.classList.remove('loading');
+}
+
+async function showSpeedReveal(totalKm, totalSec, title, onDone, toastMsg) {
+  const speedKmh = totalKm / (totalSec / 3600);
+  const { animal, pct } = pickSpeedAnimal(speedKmh);
+
+  document.getElementById('reveal-eyebrow').textContent = title ? `${title} Complete` : 'Workout Complete';
+  document.getElementById('reveal-lifted-lb').textContent = `You ran ${totalKm.toFixed(2)} km in ${formatDuration(totalSec)}`;
+  document.getElementById('reveal-lifted-kg').textContent = `Average pace: ${formatPace(totalKm, totalSec)} · ${speedKmh.toFixed(1)} km/h`;
+  document.getElementById('reveal-fact').textContent = `${animal.article} ${animal.name}'s top speed is ${animal.topSpeedKmh} km/h.`;
+
+  document.getElementById('reveal-math').textContent = `${speedKmh.toFixed(1)} km/h ÷ ${animal.topSpeedKmh} km/h ≈ ${pct}%`;
+  document.getElementById('reveal-headline').textContent = `You ran ${pct}% as fast as a ${animal.name}'s top speed!`;
 
   const img = document.getElementById('reveal-animal-img');
   img.classList.add('loading');
