@@ -211,6 +211,13 @@
       font-weight: 600;
       margin: 2px;
     }
+    .stretch-pill {
+      display: block;
+      color: var(--text);
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+      max-width: 260px;
+    }
 
     /* HISTORY */
     .history-list { display: flex; flex-direction: column; gap: 12px; }
@@ -433,7 +440,7 @@
       createUserWithEmailAndPassword, signOut
     } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
     import {
-      getFirestore, doc, getDoc, setDoc, onSnapshot,
+      initializeFirestore, doc, getDoc, setDoc, onSnapshot,
       serverTimestamp, enableIndexedDbPersistence
     } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
@@ -448,7 +455,10 @@
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
-    const db = getFirestore(app);
+    // ignoreUndefinedProperties: the app's data has optional fields (e.g. a
+    // stretch-log exercise has no sets, a normal exercise has no stretchText)
+    // that end up undefined — Firestore otherwise rejects writes containing them.
+    const db = initializeFirestore(app, { ignoreUndefinedProperties: true });
     enableIndexedDbPersistence(db).catch(() => {});
 
     // The rest of the app is a plain (non-module) script, so expose what it
@@ -732,17 +742,24 @@
       <div id="ex-minors-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"></div>
     </div>
 
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-      <label style="font-size:0.8rem;color:var(--muted);font-weight:500">Sets</label>
-      <div style="display:flex;gap:8px;align-items:center">
-        <div class="unit-toggle" id="ex-unit-toggle">
-          <button type="button" class="unit-btn active" data-unit="kg" onclick="setExUnit('kg')">kg</button>
-          <button type="button" class="unit-btn" data-unit="lb" onclick="setExUnit('lb')">lb</button>
+    <div id="sets-section">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <label style="font-size:0.8rem;color:var(--muted);font-weight:500">Sets</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div class="unit-toggle" id="ex-unit-toggle">
+            <button type="button" class="unit-btn active" data-unit="kg" onclick="setExUnit('kg')">kg</button>
+            <button type="button" class="unit-btn" data-unit="lb" onclick="setExUnit('lb')">lb</button>
+          </div>
+          <button class="btn btn-sm btn-ghost" onclick="addSet()">+ Add Set</button>
         </div>
-        <button class="btn btn-sm btn-ghost" onclick="addSet()">+ Add Set</button>
       </div>
+      <div class="sets-list" id="sets-list"></div>
     </div>
-    <div class="sets-list" id="sets-list"></div>
+
+    <div class="form-group" id="stretch-section" style="display:none">
+      <label style="font-size:0.8rem;color:var(--muted);font-weight:500">Stretches</label>
+      <textarea id="ex-stretch-text" rows="4" placeholder="e.g. Hip flexor stretch, hamstring stretch, arm circles, quad stretch"></textarea>
+    </div>
 
     <div class="form-group" style="margin-top:8px">
       <label>Notes <span style="color:var(--muted);font-weight:400;font-size:0.75rem">— form cues, how it felt, etc.</span></label>
@@ -1213,7 +1230,7 @@ function renderLastTimePanel() {
       <div class="last-time-row">
         <div class="last-time-info">
           <strong>${e.name}</strong>
-          <span class="last-time-sets">${(e.sets || []).map(s => `${s.reps}×${formatSetWeight(s.weight)}`).join(', ')}</span>
+          <span class="last-time-sets">${e.stretchText || (e.sets || []).map(s => `${s.reps}×${formatSetWeight(s.weight)}`).join(', ')}</span>
         </div>
         <button type="button" class="btn btn-ghost btn-sm" onclick="addFromLastTime(${i})">+ Add</button>
       </div>`).join('')}
@@ -1229,6 +1246,7 @@ function addFromLastTime(i) {
     minorMuscles: [...(src.minorMuscles || [])],
     sets: (src.sets || []).map(s => ({ ...s })),
     notes: src.notes || '',
+    stretchText: src.stretchText,
   });
   renderExerciseTable();
   toast(`Added ${src.name} from last time`);
@@ -1313,14 +1331,27 @@ function setExUnit(u) {
   document.querySelectorAll('#sets-list .weight-input').forEach(inp => inp.placeholder = u);
 }
 
+// "Stretches" / "Dynamic Stretches" (or any name containing "stretch") swap
+// the normal sets builder for a single free-text list.
+function isStretchName(name) {
+  return (name || '').trim().toLowerCase().includes('stretch');
+}
+function updateExerciseModeUI() {
+  const stretchMode = isStretchName(document.getElementById('ex-name').value);
+  document.getElementById('sets-section').style.display = stretchMode ? 'none' : '';
+  document.getElementById('stretch-section').style.display = stretchMode ? '' : 'none';
+}
+
 function openExerciseModal() {
   document.getElementById('ex-name').value = '';
   document.getElementById('ex-major').value = '';
   document.getElementById('ex-notes').value = '';
+  document.getElementById('ex-stretch-text').value = '';
   buildMinorCheckboxes([]);
   document.getElementById('sets-list').innerHTML = '';
   setExUnit('kg');
   addSet(); addSet(); addSet();
+  updateExerciseModeUI();
   document.getElementById('exercise-modal').classList.add('open');
 }
 function closeModal() { document.getElementById('exercise-modal').classList.remove('open'); }
@@ -1352,18 +1383,26 @@ function confirmExercise() {
   if (!name) { alert('Enter exercise name.'); return; }
   const majorMuscle = document.getElementById('ex-major').value;
   const minorMuscles = [...document.querySelectorAll('#ex-minors-grid input:checked')].map(cb => cb.value);
-  const setRows = document.querySelectorAll('#sets-list .set-row');
-  const sets = [];
-  setRows.forEach(row => {
-    const inputs = row.querySelectorAll('input[type=number]');
-    const reps = inputs[0].value;
-    const rawWeight = inputs[1].value;
-    // Sets always store weight in kg, converting from lb if that's the unit in use
-    const weight = rawWeight ? (exUnit === 'lb' ? (parseFloat(rawWeight) / 2.20462).toFixed(1) : rawWeight) : '';
-    if (reps || rawWeight) sets.push({ reps: reps || '—', weight: weight || '—' });
-  });
-  if (sets.length === 0) { alert('Add at least one set with reps.'); return; }
   const notes = document.getElementById('ex-notes').value.trim();
+  const stretchMode = isStretchName(name);
+
+  let sets = [];
+  let stretchText;
+  if (stretchMode) {
+    stretchText = document.getElementById('ex-stretch-text').value.trim();
+    if (!stretchText) { alert('List the stretches you did.'); return; }
+  } else {
+    const setRows = document.querySelectorAll('#sets-list .set-row');
+    setRows.forEach(row => {
+      const inputs = row.querySelectorAll('input[type=number]');
+      const reps = inputs[0].value;
+      const rawWeight = inputs[1].value;
+      // Sets always store weight in kg, converting from lb if that's the unit in use
+      const weight = rawWeight ? (exUnit === 'lb' ? (parseFloat(rawWeight) / 2.20462).toFixed(1) : rawWeight) : '';
+      if (reps || rawWeight) sets.push({ reps: reps || '—', weight: weight || '—' });
+    });
+    if (sets.length === 0) { alert('Add at least one set with reps.'); return; }
+  }
 
   // Auto-save muscle mapping for any exercise not already in the built-in DB
   const isBuiltIn = Object.keys(EXERCISE_DB).some(k => k.toLowerCase() === name.toLowerCase());
@@ -1379,7 +1418,7 @@ function confirmExercise() {
     }
   }
 
-  const ex = { name, majorMuscle, minorMuscles, sets, notes };
+  const ex = { name, majorMuscle, minorMuscles, sets, notes, stretchText };
   if (editingExIdx !== null) {
     currentExercises[editingExIdx] = ex;
     editingExIdx = null;
@@ -1388,6 +1427,15 @@ function confirmExercise() {
   }
   closeModal();
   renderExerciseTable();
+}
+
+// Renders the "Sets & Reps" column content for one exercise — a free-text
+// stretch list if this is a stretch-type exercise, or the usual set pills.
+function formatSetsOrStretch(ex) {
+  if (ex.stretchText) {
+    return `<span class="stretch-pill">${ex.stretchText}</span>`;
+  }
+  return (ex.sets || []).map(s => `<span class="set-pill">${s.reps}×${formatSetWeight(s.weight)}</span>`).join('');
 }
 
 function renderExerciseTable() {
@@ -1412,7 +1460,7 @@ function renderExerciseTable() {
       <td><strong>${ex.name}</strong>${ex.notes ? `<div style="font-size:0.75rem;color:var(--muted);font-style:italic;margin-top:2px">${ex.notes}</div>` : ''}</td>
       <td><span style="color:var(--accent);font-weight:600">${major}</span></td>
       <td><span style="color:var(--muted);font-size:0.8rem">${minors}</span></td>
-      <td>${ex.sets.map(s=>`<span class="set-pill">${s.reps}×${formatSetWeight(s.weight)}</span>`).join('')}</td>
+      <td>${formatSetsOrStretch(ex)}</td>
       <td>
         <button class="btn btn-ghost btn-sm" onclick="editExercise(${i})" style="margin-right:4px">Edit</button>
         <button class="btn btn-danger btn-sm" onclick="removeExercise(${i})">&#10005;</button>
@@ -1427,10 +1475,11 @@ function editExercise(i) {
   document.getElementById('ex-name').value = ex.name;
   document.getElementById('ex-major').value = ex.majorMuscle || ex.muscle || '';
   document.getElementById('ex-notes').value = ex.notes || '';
+  document.getElementById('ex-stretch-text').value = ex.stretchText || '';
   buildMinorCheckboxes(ex.minorMuscles || []);
   document.getElementById('sets-list').innerHTML = '';
   setExUnit('kg');
-  ex.sets.forEach(s => {
+  (ex.sets || []).forEach(s => {
     addSet();
     const rows = document.querySelectorAll('#sets-list .set-row');
     const last = rows[rows.length-1];
@@ -1438,6 +1487,7 @@ function editExercise(i) {
     inputs[0].value = s.reps === '—' ? '' : s.reps;
     inputs[1].value = s.weight === '—' ? '' : s.weight;
   });
+  updateExerciseModeUI();
   document.getElementById('exercise-modal').classList.add('open');
 }
 
@@ -1644,7 +1694,7 @@ function historyCardHTML(w) {
                   <td><strong>${e.name}</strong>${e.notes ? `<div style="font-size:0.75rem;color:var(--muted);font-style:italic;margin-top:2px">${e.notes}</div>` : ''}</td>
                   <td style="color:var(--accent);font-weight:600">${e.majorMuscle||e.muscle||'—'}</td>
                   <td style="color:var(--muted);font-size:0.8rem">${(e.minorMuscles||[]).join(', ')||'—'}</td>
-                  <td>${(e.sets||[]).map(s=>`<span class="set-pill">${s.reps}×${formatSetWeight(s.weight)}</span>`).join('')}</td>
+                  <td>${formatSetsOrStretch(e)}</td>
                 </tr>`).join('')}
             </tbody>
           </table>` : ''}
@@ -2217,7 +2267,7 @@ function buildPrintReport() {
     const exercises = (w.exercises || []).map(e => `
       <div class="print-exercise">
         <strong>${e.name}</strong>${e.majorMuscle ? ` — ${e.majorMuscle}` : ''}
-        <div class="print-sets">${(e.sets || []).map(s => `${s.reps}×${formatSetWeight(s.weight)}`).join(', ')}</div>
+        <div class="print-sets">${e.stretchText || (e.sets || []).map(s => `${s.reps}×${formatSetWeight(s.weight)}`).join(', ')}</div>
         ${e.notes ? `<div class="print-notes">${e.notes}</div>` : ''}
       </div>`).join('');
 
@@ -2310,6 +2360,8 @@ if ('serviceWorker' in navigator) {
 // Auto-fill muscles when exercise name changes
 document.getElementById('ex-name').addEventListener('input', autoFillMuscles);
 document.getElementById('ex-name').addEventListener('change', autoFillMuscles);
+document.getElementById('ex-name').addEventListener('input', updateExerciseModeUI);
+document.getElementById('ex-name').addEventListener('change', updateExerciseModeUI);
 
 // Show recurring workout notes + "last time" reference as the workout name is typed
 document.getElementById('log-name').addEventListener('input', () => {
