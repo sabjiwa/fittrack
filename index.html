@@ -718,7 +718,7 @@
           <option>Tricep Dip</option><option>Tricep Pushdown</option><option>Skull Crusher</option>
           <option>Hip Thrust</option><option>Calf Raise</option>
           <option>Plank</option><option>Crunch</option><option>Ab Wheel</option>
-          <option>Running</option><option>Cycling</option><option>Jump Rope</option>
+          <option>Run</option><option>Jog</option><option>Running</option><option>Cycling</option><option>Jump Rope</option>
         </datalist>
       </div>
     </div>
@@ -759,6 +759,31 @@
     <div class="form-group" id="stretch-section" style="display:none">
       <label style="font-size:0.8rem;color:var(--muted);font-weight:500">Stretches</label>
       <textarea id="ex-stretch-text" rows="4" placeholder="e.g. Hip flexor stretch, hamstring stretch, arm circles, quad stretch"></textarea>
+    </div>
+
+    <div id="cardio-section" style="display:none;margin-bottom:16px">
+      <label style="font-size:0.8rem;color:var(--muted);font-weight:500;display:block;margin-bottom:8px">Distance &amp; Time</label>
+      <div class="form-row" style="margin-bottom:8px">
+        <div class="form-group" style="flex:1">
+          <label>Distance</label>
+          <div style="display:flex;gap:8px">
+            <input type="number" id="ex-distance" step="0.01" min="0" placeholder="5.0" style="flex:1;min-width:0" oninput="updatePacePreview()" />
+            <div class="unit-toggle" id="ex-distance-unit-toggle">
+              <button type="button" class="unit-btn active" data-unit="km" onclick="setDistanceUnit('km')">km</button>
+              <button type="button" class="unit-btn" data-unit="mi" onclick="setDistanceUnit('mi')">mi</button>
+            </div>
+          </div>
+        </div>
+        <div class="form-group" style="flex:1">
+          <label>Time (mm:ss)</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="number" id="ex-duration-min" min="0" placeholder="mm" style="width:100%;min-width:0" oninput="updatePacePreview()" />
+            <span style="color:var(--muted)">:</span>
+            <input type="number" id="ex-duration-sec" min="0" max="59" placeholder="ss" style="width:100%;min-width:0" oninput="updatePacePreview()" />
+          </div>
+        </div>
+      </div>
+      <div style="font-size:0.85rem;color:var(--muted)">Pace: <strong id="ex-pace-preview" style="color:var(--text)">—</strong></div>
     </div>
 
     <div class="form-group" style="margin-top:8px">
@@ -1230,7 +1255,7 @@ function renderLastTimePanel() {
       <div class="last-time-row">
         <div class="last-time-info">
           <strong>${e.name}</strong>
-          <span class="last-time-sets">${e.stretchText || (e.sets || []).map(s => `${s.reps}×${formatSetWeight(s.weight)}`).join(', ')}</span>
+          <span class="last-time-sets">${exerciseDetailText(e)}</span>
         </div>
         <button type="button" class="btn btn-ghost btn-sm" onclick="addFromLastTime(${i})">+ Add</button>
       </div>`).join('')}
@@ -1247,6 +1272,9 @@ function addFromLastTime(i) {
     sets: (src.sets || []).map(s => ({ ...s })),
     notes: src.notes || '',
     stretchText: src.stretchText,
+    distance: src.distance,
+    distanceUnit: src.distanceUnit,
+    durationSec: src.durationSec,
   });
   renderExerciseTable();
   toast(`Added ${src.name} from last time`);
@@ -1290,6 +1318,9 @@ const EXERCISE_DB = {
   'Crunch':            { major: 'Core',       minors: [] },
   'Ab Wheel':          { major: 'Core',       minors: ['Shoulders','Back'] },
   'Running':           { major: 'Cardio',     minors: ['Quads','Calves','Core'] },
+  'Run':               { major: 'Cardio',     minors: ['Quads','Calves','Core'] },
+  'Jog':               { major: 'Cardio',     minors: ['Quads','Calves','Core'] },
+  'Jogging':           { major: 'Cardio',     minors: ['Quads','Calves','Core'] },
   'Cycling':           { major: 'Cardio',     minors: ['Quads','Calves'] },
   'Jump Rope':         { major: 'Cardio',     minors: ['Calves','Shoulders','Core'] },
 };
@@ -1333,13 +1364,53 @@ function setExUnit(u) {
 
 // "Stretches" / "Dynamic Stretches" (or any name containing "stretch") swap
 // the normal sets builder for a single free-text list.
-function isStretchName(name) {
-  return (name || '').trim().toLowerCase().includes('stretch');
+function getExerciseMode(name) {
+  const n = (name || '').trim().toLowerCase();
+  if (n.includes('stretch')) return 'stretch';
+  if (n.includes('run') || n.includes('jog')) return 'cardio';
+  return 'sets';
 }
 function updateExerciseModeUI() {
-  const stretchMode = isStretchName(document.getElementById('ex-name').value);
-  document.getElementById('sets-section').style.display = stretchMode ? 'none' : '';
-  document.getElementById('stretch-section').style.display = stretchMode ? '' : 'none';
+  const mode = getExerciseMode(document.getElementById('ex-name').value);
+  document.getElementById('sets-section').style.display = mode === 'sets' ? '' : 'none';
+  document.getElementById('stretch-section').style.display = mode === 'stretch' ? '' : 'none';
+  document.getElementById('cardio-section').style.display = mode === 'cardio' ? '' : 'none';
+}
+
+// ---- distance/pace helpers (run/jog exercises) ----
+let exDistanceUnit = 'km';
+function setDistanceUnit(u) {
+  exDistanceUnit = u;
+  document.querySelectorAll('#ex-distance-unit-toggle .unit-btn').forEach(b => b.classList.toggle('active', b.dataset.unit === u));
+  updatePacePreview();
+}
+function kmFromDistance(distance, unit) {
+  const d = parseFloat(distance);
+  if (isNaN(d) || d <= 0) return null;
+  return unit === 'mi' ? d * 1.60934 : d;
+}
+function formatDuration(totalSec) {
+  const min = Math.floor(totalSec / 60);
+  const sec = Math.round(totalSec % 60);
+  return `${min}:${sec < 10 ? '0' : ''}${sec}`;
+}
+function formatPace(km, durationSec) {
+  if (!km || !durationSec) return null;
+  const secPerKm = durationSec / km;
+  return `${formatDuration(secPerKm)} /km`;
+}
+function formatCardioSummary(ex) {
+  const km = kmFromDistance(ex.distance, ex.distanceUnit);
+  const pace = formatPace(km, ex.durationSec);
+  return `${ex.distance} ${ex.distanceUnit} in ${formatDuration(ex.durationSec)}${pace ? ` · ${pace} pace` : ''}`;
+}
+function updatePacePreview() {
+  const distance = document.getElementById('ex-distance').value;
+  const min = parseFloat(document.getElementById('ex-duration-min').value) || 0;
+  const sec = parseFloat(document.getElementById('ex-duration-sec').value) || 0;
+  const durationSec = min * 60 + sec;
+  const km = kmFromDistance(distance, exDistanceUnit);
+  document.getElementById('ex-pace-preview').textContent = formatPace(km, durationSec) || '—';
 }
 
 function openExerciseModal() {
@@ -1347,6 +1418,10 @@ function openExerciseModal() {
   document.getElementById('ex-major').value = '';
   document.getElementById('ex-notes').value = '';
   document.getElementById('ex-stretch-text').value = '';
+  document.getElementById('ex-distance').value = '';
+  document.getElementById('ex-duration-min').value = '';
+  document.getElementById('ex-duration-sec').value = '';
+  setDistanceUnit('km');
   buildMinorCheckboxes([]);
   document.getElementById('sets-list').innerHTML = '';
   setExUnit('kg');
@@ -1384,13 +1459,22 @@ function confirmExercise() {
   const majorMuscle = document.getElementById('ex-major').value;
   const minorMuscles = [...document.querySelectorAll('#ex-minors-grid input:checked')].map(cb => cb.value);
   const notes = document.getElementById('ex-notes').value.trim();
-  const stretchMode = isStretchName(name);
+  const mode = getExerciseMode(name);
 
   let sets = [];
-  let stretchText;
-  if (stretchMode) {
+  let stretchText, distance, distanceUnit, durationSec;
+  if (mode === 'stretch') {
     stretchText = document.getElementById('ex-stretch-text').value.trim();
     if (!stretchText) { alert('List the stretches you did.'); return; }
+  } else if (mode === 'cardio') {
+    const distVal = parseFloat(document.getElementById('ex-distance').value);
+    const min = parseFloat(document.getElementById('ex-duration-min').value) || 0;
+    const sec = parseFloat(document.getElementById('ex-duration-sec').value) || 0;
+    durationSec = min * 60 + sec;
+    if (!distVal || distVal <= 0) { alert('Enter a distance.'); return; }
+    if (!durationSec) { alert('Enter a time.'); return; }
+    distance = distVal;
+    distanceUnit = exDistanceUnit;
   } else {
     const setRows = document.querySelectorAll('#sets-list .set-row');
     setRows.forEach(row => {
@@ -1418,7 +1502,7 @@ function confirmExercise() {
     }
   }
 
-  const ex = { name, majorMuscle, minorMuscles, sets, notes, stretchText };
+  const ex = { name, majorMuscle, minorMuscles, sets, notes, stretchText, distance, distanceUnit, durationSec };
   if (editingExIdx !== null) {
     currentExercises[editingExIdx] = ex;
     editingExIdx = null;
@@ -1430,12 +1514,24 @@ function confirmExercise() {
 }
 
 // Renders the "Sets & Reps" column content for one exercise — a free-text
-// stretch list if this is a stretch-type exercise, or the usual set pills.
-function formatSetsOrStretch(ex) {
+// stretch list, distance/time/pace, or the usual set pills, depending on
+// which kind of exercise this is.
+function formatExerciseDetail(ex) {
   if (ex.stretchText) {
     return `<span class="stretch-pill">${ex.stretchText}</span>`;
   }
+  if (ex.distance != null && ex.durationSec != null) {
+    return `<span class="stretch-pill">${formatCardioSummary(ex)}</span>`;
+  }
   return (ex.sets || []).map(s => `<span class="set-pill">${s.reps}×${formatSetWeight(s.weight)}</span>`).join('');
+}
+
+// Same idea, but plain text (no pill markup) for the print report and the
+// "last time" reference panel.
+function exerciseDetailText(ex) {
+  if (ex.stretchText) return ex.stretchText;
+  if (ex.distance != null && ex.durationSec != null) return formatCardioSummary(ex);
+  return (ex.sets || []).map(s => `${s.reps}×${formatSetWeight(s.weight)}`).join(', ');
 }
 
 function renderExerciseTable() {
@@ -1460,7 +1556,7 @@ function renderExerciseTable() {
       <td><strong>${ex.name}</strong>${ex.notes ? `<div style="font-size:0.75rem;color:var(--muted);font-style:italic;margin-top:2px">${ex.notes}</div>` : ''}</td>
       <td><span style="color:var(--accent);font-weight:600">${major}</span></td>
       <td><span style="color:var(--muted);font-size:0.8rem">${minors}</span></td>
-      <td>${formatSetsOrStretch(ex)}</td>
+      <td>${formatExerciseDetail(ex)}</td>
       <td>
         <button class="btn btn-ghost btn-sm" onclick="editExercise(${i})" style="margin-right:4px">Edit</button>
         <button class="btn btn-danger btn-sm" onclick="removeExercise(${i})">&#10005;</button>
@@ -1476,6 +1572,10 @@ function editExercise(i) {
   document.getElementById('ex-major').value = ex.majorMuscle || ex.muscle || '';
   document.getElementById('ex-notes').value = ex.notes || '';
   document.getElementById('ex-stretch-text').value = ex.stretchText || '';
+  document.getElementById('ex-distance').value = ex.distance || '';
+  document.getElementById('ex-duration-min').value = ex.durationSec != null ? Math.floor(ex.durationSec / 60) : '';
+  document.getElementById('ex-duration-sec').value = ex.durationSec != null ? ex.durationSec % 60 : '';
+  setDistanceUnit(ex.distanceUnit || 'km');
   buildMinorCheckboxes(ex.minorMuscles || []);
   document.getElementById('sets-list').innerHTML = '';
   setExUnit('kg');
@@ -1694,7 +1794,7 @@ function historyCardHTML(w) {
                   <td><strong>${e.name}</strong>${e.notes ? `<div style="font-size:0.75rem;color:var(--muted);font-style:italic;margin-top:2px">${e.notes}</div>` : ''}</td>
                   <td style="color:var(--accent);font-weight:600">${e.majorMuscle||e.muscle||'—'}</td>
                   <td style="color:var(--muted);font-size:0.8rem">${(e.minorMuscles||[]).join(', ')||'—'}</td>
-                  <td>${formatSetsOrStretch(e)}</td>
+                  <td>${formatExerciseDetail(e)}</td>
                 </tr>`).join('')}
             </tbody>
           </table>` : ''}
@@ -2267,7 +2367,7 @@ function buildPrintReport() {
     const exercises = (w.exercises || []).map(e => `
       <div class="print-exercise">
         <strong>${e.name}</strong>${e.majorMuscle ? ` — ${e.majorMuscle}` : ''}
-        <div class="print-sets">${e.stretchText || (e.sets || []).map(s => `${s.reps}×${formatSetWeight(s.weight)}`).join(', ')}</div>
+        <div class="print-sets">${exerciseDetailText(e)}</div>
         ${e.notes ? `<div class="print-notes">${e.notes}</div>` : ''}
       </div>`).join('');
 
