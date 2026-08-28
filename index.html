@@ -1151,7 +1151,7 @@ function getWeekWorkouts() {
   const monday = new Date(now);
   monday.setDate(now.getDate() - ((day + 6) % 7));
   monday.setHours(0,0,0,0);
-  return workouts.filter(w => new Date(w.date) >= monday).length;
+  return workouts.filter(w => new Date(w.date + 'T00:00:00') >= monday).length;
 }
 
 function editGoal() {
@@ -2258,7 +2258,7 @@ function buildPrintReport() {
   const exportedOn = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
   const body = sorted.map(w => {
-    const dateStr = new Date(w.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const dateStr = new Date(w.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const totalKg = computeWorkoutVolumeKg(w);
     const subParts = [w.type];
     if (w.duration) subParts.push(`${w.duration} min`);
