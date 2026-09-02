@@ -29,56 +29,86 @@ const ANIMALS = [
   { name: "blue whale", plural: "blue whales", article: "A", weightKg: 130000, topSpeedKmh: 30, wikiTitle: "Blue whale" },
 ];
 
-// Picks the animal that yields the most "readable" (satisfying) count for a
-// given total weight lifted (in kg). Prefers counts near a sweet-spot
-// magnitude rather than always defaulting to the same animal.
+// Weighted-random choice among candidates, favoring lower `score` (a
+// closer match) without making it a guaranteed argmin — otherwise anyone
+// with a consistent training routine (similar total volume/pace session to
+// session) would always land on the exact same single "best" animal, since
+// that band of totals always resolves to one winner. A small epsilon keeps
+// the weighting from blowing up on a near-perfect (score ≈ 0) match.
+function weightedRandomPick(candidates) {
+  const EPSILON = 0.15;
+  const weights = candidates.map(c => 1 / (c.score + EPSILON));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < candidates.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return candidates[i];
+  }
+  return candidates[candidates.length - 1];
+}
+
+// Re-rolls once if the pick matches the last-shown animal for this reveal
+// type, so consecutive sessions with similar totals can't repeat back to back.
+function pickWithNoImmediateRepeat(candidates, storageKey) {
+  let chosen = weightedRandomPick(candidates);
+  const last = localStorage.getItem(storageKey);
+  if (chosen.animal.name === last && candidates.length > 1) {
+    chosen = weightedRandomPick(candidates.filter(c => c.animal.name !== last));
+  }
+  localStorage.setItem(storageKey, chosen.animal.name);
+  return chosen;
+}
+
+// Picks the animal that yields a "readable" (satisfying) count for a given
+// total weight lifted (in kg) — weighted toward counts near a sweet-spot
+// magnitude, but randomized among reasonable matches rather than always
+// the single closest one.
 function pickAnimal(totalKg) {
   const SWEET_SPOT = 30;
-  let best = null;
-  let bestScore = Infinity;
+  const candidates = [];
 
   for (const animal of ANIMALS) {
     const count = totalKg / animal.weightKg;
     if (count < 1) continue; // skip animals that would round to 0
     const score = Math.abs(Math.log10(count) - Math.log10(SWEET_SPOT));
-    if (score < bestScore) {
-      bestScore = score;
-      best = animal;
-    }
+    candidates.push({ animal, count, score });
   }
 
   // Total weight is lighter than even the smallest animal on the list.
-  if (!best) best = ANIMALS[0];
+  if (candidates.length === 0) {
+    const animal = ANIMALS[0];
+    return { animal, count: Math.max(1, Math.round(totalKg / animal.weightKg)) };
+  }
 
-  const rawCount = totalKg / best.weightKg;
-  const count = Math.max(1, Math.round(rawCount));
-  return { animal: best, count };
+  const chosen = pickWithNoImmediateRepeat(candidates, 'ft_last_weight_animal');
+  const count = Math.max(1, Math.round(chosen.count));
+  return { animal: chosen.animal, count };
 }
 
 // Picks the animal whose top speed makes the runner's average speed land
-// near a "satisfying" percentage of it (sweet spot ~50%), same log-distance
-// approach as pickAnimal — avoids always comparing against the fastest
-// (cheetah) or slowest (penguin) animal on the list.
+// near a "satisfying" percentage of it (sweet spot ~50%), same weighted-random
+// approach as pickAnimal — avoids always comparing against the same animal
+// for a runner with a fairly consistent pace.
 function pickSpeedAnimal(speedKmh) {
   const TARGET_PCT = 0.5;
-  let best = null;
-  let bestScore = Infinity;
+  const candidates = [];
 
   for (const animal of ANIMALS) {
     if (!animal.topSpeedKmh) continue;
     const pct = speedKmh / animal.topSpeedKmh;
     if (pct <= 0) continue;
     const score = Math.abs(Math.log10(pct) - Math.log10(TARGET_PCT));
-    if (score < bestScore) {
-      bestScore = score;
-      best = animal;
-    }
+    candidates.push({ animal, pct, score });
   }
 
-  if (!best) best = ANIMALS.find(a => a.topSpeedKmh) || ANIMALS[0];
+  if (candidates.length === 0) {
+    const animal = ANIMALS.find(a => a.topSpeedKmh) || ANIMALS[0];
+    return { animal, pct: Math.max(1, Math.round((speedKmh / animal.topSpeedKmh) * 100)) };
+  }
 
-  const pct = Math.max(1, Math.round((speedKmh / best.topSpeedKmh) * 100));
-  return { animal: best, pct };
+  const chosen = pickWithNoImmediateRepeat(candidates, 'ft_last_speed_animal');
+  const pct = Math.max(1, Math.round((speedKmh / chosen.animal.topSpeedKmh) * 100));
+  return { animal: chosen.animal, pct };
 }
 
 // Fetches a real photo for the animal from Wikipedia's pageimages API.
