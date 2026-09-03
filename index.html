@@ -2537,7 +2537,12 @@ renderDashboard();
 document.getElementById('metric-date').value = new Date().toISOString().slice(0,10);
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+  // updateViaCache: 'none' forces the browser to always fetch sw.js fresh
+  // from the network when checking for updates, bypassing both its own HTTP
+  // cache and GitHub Pages' Cache-Control: max-age=600 on this file — without
+  // it, updates can sit invisible for up to 10 minutes after a deploy, or
+  // longer if something along the way holds onto a stale cached copy.
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }));
 }
 
 // Populate datalist with any saved custom exercises
