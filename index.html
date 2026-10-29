@@ -437,10 +437,11 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
     import {
       getAuth, onAuthStateChanged, signInWithEmailAndPassword,
-      createUserWithEmailAndPassword, signOut
+      createUserWithEmailAndPassword, signOut,
+      deleteUser, reauthenticateWithCredential, EmailAuthProvider
     } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
     import {
-      initializeFirestore, doc, getDoc, setDoc, onSnapshot,
+      initializeFirestore, doc, getDoc, setDoc, deleteDoc, onSnapshot,
       serverTimestamp, enableIndexedDbPersistence
     } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 
@@ -466,9 +467,10 @@
     // app relies on inline onclick="..." handlers throughout, which only
     // resolve against the global scope classic scripts get automatically.
     window.fb = {
-      auth, db, doc, getDoc, setDoc, onSnapshot, serverTimestamp,
+      auth, db, doc, getDoc, setDoc, deleteDoc, onSnapshot, serverTimestamp,
       onAuthStateChanged, signInWithEmailAndPassword,
       createUserWithEmailAndPassword, signOut,
+      deleteUser, reauthenticateWithCredential, EmailAuthProvider,
     };
     window.dispatchEvent(new Event('fb-ready'));
   </script>
@@ -493,6 +495,7 @@
       <button class="btn btn-ghost" style="flex:1" onclick="authSignUp()">Create Account</button>
       <button class="btn btn-green" style="flex:1" onclick="authSignIn()">Sign In</button>
     </div>
+    <p style="margin-top:14px;font-size:0.75rem;color:var(--muted);text-align:center">By creating an account you agree to how your data is handled in the <a href="#" onclick="openPrivacyModal();return false" style="color:var(--accent)">privacy note</a>.</p>
   </div>
 </div>
 
@@ -859,10 +862,50 @@
         <span style="font-size:0.85rem;color:var(--muted)">Signed in as <strong id="account-email" style="color:var(--text)">—</strong></span>
         <button class="btn btn-ghost btn-sm" onclick="signOutUser()">Sign Out</button>
       </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn btn-ghost btn-sm" onclick="openPrivacyModal()">Privacy note</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--accent2);border-color:var(--accent2)" onclick="openDeleteAccountModal()">Delete my account and data</button>
+      </div>
     </div>
 
     <div class="modal-footer" style="margin-top:20px">
       <button class="btn btn-ghost" onclick="closeImportModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- DELETE ACCOUNT MODAL -->
+<div class="modal-overlay" id="delete-account-modal">
+  <div class="modal" style="max-width:380px">
+    <h3>Delete account and data</h3>
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:12px;line-height:1.5">This permanently deletes your login and everything saved to it &mdash; workouts, body metrics, notes and settings &mdash; from the cloud and from this device. It can't be undone. If you want a copy first, cancel and use Export JSON backup.</p>
+    <div class="form-group" style="margin-bottom:12px">
+      <label>Enter your password to confirm</label>
+      <input type="password" id="delete-password" autocomplete="current-password" />
+    </div>
+    <p id="delete-error" style="color:var(--accent2);font-size:0.8rem;display:none;margin-bottom:12px"></p>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeDeleteAccountModal()">Cancel</button>
+      <button class="btn btn-danger" id="delete-confirm-btn" onclick="confirmDeleteAccount()">Delete everything</button>
+    </div>
+  </div>
+</div>
+
+<!-- PRIVACY NOTE MODAL -->
+<div class="modal-overlay" id="privacy-modal" style="z-index:600">
+  <div class="modal" style="max-width:480px">
+    <h3>Privacy note</h3>
+    <div style="font-size:0.85rem;line-height:1.55;color:var(--text)">
+      <p style="margin-bottom:10px"><strong>What's stored.</strong> Your email address, plus whatever you log: workouts, exercises, notes, body measurements (weight, body fat, chest, waist, hips), goals and settings.</p>
+      <p style="margin-bottom:10px"><strong>Where.</strong> In a Google Firebase (Cloud Firestore) database tied to your account, plus a copy on your device so the app works offline. Google encrypts it in transit and at rest.</p>
+      <p style="margin-bottom:10px"><strong>Who can see it.</strong> Other users can't &mdash; each account can only read its own data. The person who runs this app has administrator access to the database and could technically view it. Your data is only used to make the app work for you.</p>
+      <p style="margin-bottom:10px"><strong>What it isn't used for.</strong> It isn't sold, shared with advertisers, or used for ads or tracking. The animal pictures load from Wikipedia, which (like any website you visit) can see your device's IP address.</p>
+      <p style="margin-bottom:10px"><strong>Your choices.</strong> Export your data any time (Import / Export). Delete your account and all your data any time: Import / Export &rarr; Account &rarr; Delete my account and data. Deleting removes your cloud data and login right away and clears this device; Google's systems may take some time to fully purge backups, and any files you exported stay with you.</p>
+      <p style="margin-bottom:10px"><strong>Not medical.</strong> FitTrack is a personal workout log, not medical advice or a medical record.</p>
+      <p style="margin-bottom:0;color:var(--muted)">Questions or requests? Contact the person who invited you to use the app. This is an early, informal project. Last updated October 2026.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closePrivacyModal()">Close</button>
     </div>
   </div>
 </div>
@@ -929,10 +972,12 @@ let editingWorkoutId = null;
 // ============================================================
 let currentUser = null;
 let cloudUnsub = null;
+let deletingAccount = false; // while true, nothing may write local or cloud data
 
 // Every mutation in the app calls this instead of hitting localStorage
 // directly, so local and cloud storage never drift apart.
 function persistAll() {
+  if (deletingAccount) return;
   save('ft_workouts', workouts);
   save('ft_metrics', metrics);
   save('ft_custom_exercises', customExercises);
@@ -1046,7 +1091,87 @@ function friendlyAuthError(e) {
   if (code.includes('email-already-in-use')) return 'That email already has an account — try Sign In.';
   if (code.includes('weak-password')) return 'Password must be at least 6 characters.';
   if (code.includes('invalid-email')) return 'That email address looks invalid.';
+  if (code.includes('too-many-requests')) return 'Too many attempts. Wait a few minutes and try again.';
   return 'Something went wrong. Please try again.';
+}
+
+// ---- Privacy note ----
+function openPrivacyModal() { document.getElementById('privacy-modal').classList.add('open'); }
+function closePrivacyModal() { document.getElementById('privacy-modal').classList.remove('open'); }
+
+// ---- Delete account and data ----
+function showDeleteError(msg) {
+  const el = document.getElementById('delete-error');
+  el.textContent = msg;
+  el.style.display = msg ? '' : 'none';
+}
+function openDeleteAccountModal() {
+  closeImportModal();
+  document.getElementById('delete-password').value = '';
+  document.getElementById('delete-confirm-btn').disabled = false;
+  showDeleteError('');
+  document.getElementById('delete-account-modal').classList.add('open');
+}
+function closeDeleteAccountModal() {
+  document.getElementById('delete-account-modal').classList.remove('open');
+}
+
+function wipeLocalData() {
+  Object.keys(localStorage).filter(k => k.startsWith('ft_')).forEach(k => localStorage.removeItem(k));
+  workouts = []; metrics = []; customExercises = {}; weeklyGoal = 3; workoutNotesMap = {};
+}
+
+// Re-checks the password (Firebase requires a recent sign-in to delete an
+// account), deletes the cloud data first while the login still has
+// permission to, then deletes the login, then clears this device.
+async function confirmDeleteAccount() {
+  const password = document.getElementById('delete-password').value;
+  if (!password) { showDeleteError('Enter your password to confirm.'); return; }
+  if (!currentUser) { showDeleteError('You are not signed in.'); return; }
+
+  const btn = document.getElementById('delete-confirm-btn');
+  btn.disabled = true;
+  showDeleteError('');
+  const user = currentUser;
+
+  try {
+    const cred = window.fb.EmailAuthProvider.credential(user.email, password);
+    await window.fb.reauthenticateWithCredential(user, cred);
+  } catch (e) {
+    btn.disabled = false;
+    const code = e.code || '';
+    showDeleteError(code.includes('wrong-password') || code.includes('invalid-credential') ? 'Incorrect password.' : friendlyAuthError(e));
+    return;
+  }
+
+  deletingAccount = true;
+  if (cloudUnsub) { cloudUnsub(); cloudUnsub = null; }
+
+  try {
+    await window.fb.deleteDoc(window.fb.doc(window.fb.db, 'users', user.uid));
+  } catch (e) {
+    console.error('Deleting cloud data failed:', e);
+    deletingAccount = false;
+    btn.disabled = false;
+    showDeleteError('Could not delete your cloud data, so nothing was deleted. Check your connection and try again.');
+    return;
+  }
+
+  // Cloud data is gone; clear this device too so a later sign-in on it can't
+  // re-upload the old data.
+  wipeLocalData();
+
+  try {
+    await window.fb.deleteUser(user);
+  } catch (e) {
+    console.error('Deleting login failed:', e);
+    btn.disabled = false;
+    showDeleteError('Your data was deleted, but removing the login itself failed. Press Delete everything again to finish.');
+    return;
+  }
+
+  try { sessionStorage.setItem('ft_account_deleted', '1'); } catch (e) {}
+  location.reload();
 }
 
 async function authSignIn() {
@@ -2535,6 +2660,13 @@ function toast(msg) {
 initLog();
 renderDashboard();
 document.getElementById('metric-date').value = new Date().toISOString().slice(0,10);
+
+try {
+  if (sessionStorage.getItem('ft_account_deleted')) {
+    sessionStorage.removeItem('ft_account_deleted');
+    setTimeout(() => toast('Your account and data have been deleted.'), 400);
+  }
+} catch (e) {}
 
 if ('serviceWorker' in navigator) {
   // updateViaCache: 'none' forces the browser to always fetch sw.js fresh
